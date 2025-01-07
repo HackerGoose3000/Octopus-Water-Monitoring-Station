@@ -1,138 +1,163 @@
 # Octopus-Water-Monitoring-Station
 
-#include <WiFi.h>
-#include <ESPAsyncWebServer.h>
-#include <OneWire.h>
-#include <DallasTemperature.h>
-#include <Wire.h>
-#include <LiquidCrystal_I2C.h>
+#include <WiFi.h>              // Include the WiFi library for network functionality
+#include <ESPAsyncWebServer.h>  // Include the AsyncWebServer library for serving web pages
+#include <OneWire.h>            // Include the OneWire library for communication with DS18B20 temperature sensor
+#include <DallasTemperature.h>  // Include the DallasTemperature library to easily handle DS18B20 sensors
+#include <Wire.h>               // Include the Wire library for I2C communication with LCD
+#include <LiquidCrystal_I2C.h>  // Include the LiquidCrystal_I2C library for LCD display
 
 // WiFi credentials
-const char* ssid = "ATTTUtxUNe 2.4";
-const char* password = "ygtv#4f2qruv";
+const char* ssid = "ATTTUtxUNe 2.4";  // Define the SSID for WiFi connection
+const char* password = "ygtv#4f2qruv"; // Define the WiFi password
 
 // Sensor pins
-const int oneWireBus = 33;      // DS18B20 Temperature Sensor
-const int soilSensorPin = 35;   // Soil moisture sensor pin
-const int orpPin = 39;          // ORP sensor pin
-const int waterSensorPin = 32;  // Water level sensor pin
-const int turbidityPin = 26;    // Turbidity sensor pin (digital)
-const int tdsSensorPin = 36;    // TDS sensor pin
-const int flowSensorPin = 27;   // Flow rate sensor pin
-const int pHSensorPin = 34;     // pH sensor pin
+const int oneWireBus = 33;      // Pin for DS18B20 temperature sensor
+const int soilSensorPin = 35;   // Pin for soil moisture sensor
+const int orpPin = 39;          // Pin for ORP sensor
+const int waterSensorPin = 32;  // Pin for water level sensor
+const int turbidityPin = 26;    // Pin for turbidity sensor (digital)
+const int tdsSensorPin = 36;    // Pin for TDS sensor
+const int flowSensorPin = 27;   // Pin for flow rate sensor
+const int pHSensorPin = 34;     // Pin for pH sensor
 
 // Variables
-OneWire oneWire(oneWireBus);
-DallasTemperature sensors(&oneWire);
+OneWire oneWire(oneWireBus);     // Initialize the OneWire object for the DS18B20 sensor
+DallasTemperature sensors(&oneWire); // Initialize the DallasTemperature object
 
-volatile byte pulseCount = 0;
-float flowRate = 0.0;
-float temperatureC = 0.0;
-int soilMoisture = 0;
-String turbidity;
-float tdsValue = 0.0;
-float orpValue = 0.0;
-int waterLevel = 0;
-float pHValue = 0.0;
+volatile byte pulseCount = 0;    // Variable to count pulses from the flow sensor
+float flowRate = 0.0;            // Variable to store the flow rate value
+float temperatureC = 0.0;        // Variable to store the temperature in Celsius
+int soilMoisture = 0;            // Variable to store the soil moisture level
+String turbidity;                // String to store turbidity status (HIGH/LOW)
+float tdsValue = 0.0;            // Variable to store the TDS value
+float orpValue = 0.0;            // Variable to store the ORP value
+int waterLevel = 0;              // Variable to store the water level value
+float pHValue = 0.0;             // Variable to store the pH value
 
 // LCD setup
-LiquidCrystal_I2C lcd(0x3F, 16, 2);  // I2C address 0x3F, 16x2 display
-int lcdDelay=2000;
+LiquidCrystal_I2C lcd(0x3F, 16, 2);  // Initialize the LCD with address 0x3F and a 16x2 display
+int lcdDelay = 2000;                // Delay time for LCD display updates
+
 // Web server instance
-AsyncWebServer server(80);
+AsyncWebServer server(80); // Create an instance of the asynchronous web server running on port 80
 
 // Time tracking for 5-second updates
-unsigned long lastUpdateTime = 0;
-const unsigned long updateInterval = 5000;  // 5 seconds (5000 milliseconds)
+unsigned long lastUpdateTime = 0;           // Variable to store the last update time
+const unsigned long updateInterval = 5000;  // Set the interval for updates to 5 seconds (5000 milliseconds)
 
-// Function to count pulses for flow sensor
+// Function to count pulses from the flow sensor
 void IRAM_ATTR pulseCounter() {
-  pulseCount++;
+  pulseCount++;  // Increment the pulse count whenever a pulse is detected
 }
 
-// Function to read all sensors
+// Function to read sensor data
 void readSensors() {
   // Temperature sensor
-  sensors.requestTemperatures();
-  temperatureC = sensors.getTempCByIndex(0);
+  sensors.requestTemperatures(); // Request temperature readings from DS18B20
+  temperatureC = sensors.getTempCByIndex(0); // Get the temperature value in Celsius
 
   // Soil moisture sensor
-  soilMoisture = analogRead(soilSensorPin);
+  soilMoisture = analogRead(soilSensorPin); // Read the value from the soil moisture sensor
 
   // Turbidity sensor (digital)
-  if (digitalRead(turbidityPin) == HIGH) {
-    turbidity = "HIGH";
+  if (digitalRead(turbidityPin) == HIGH) { // Check if the turbidity sensor is HIGH
+    turbidity = "HIGH"; // Set turbidity to "HIGH" if detected
   } else {
-    turbidity = "LOW";
+    turbidity = "LOW";  // Set turbidity to "LOW" if not detected
   }
 
   // TDS sensor
-  int tdsRaw = analogRead(tdsSensorPin);
-  float voltageTDS = tdsRaw * (3.3 / 4095.0);
-  float compensationVoltage = voltageTDS / (1.0 + 0.02 * (temperatureC - 25.0));
+  int tdsRaw = analogRead(tdsSensorPin); // Read raw data from TDS sensor
+  float voltageTDS = tdsRaw * (3.3 / 4095.0); // Convert the raw value to voltage
+  float compensationVoltage = voltageTDS / (1.0 + 0.02 * (temperatureC - 25.0)); // Apply temperature compensation
   tdsValue = (133.42 * compensationVoltage * compensationVoltage * compensationVoltage -
               255.86 * compensationVoltage * compensationVoltage +
-              857.39 * compensationVoltage) * 0.5;
+              857.39 * compensationVoltage) * 0.5; // Calculate the TDS value in ppm
 
   // Water level sensor
-  waterLevel = analogRead(waterSensorPin);
+  waterLevel = analogRead(waterSensorPin); // Read the water level sensor value
 
   // ORP sensor
-  static int orpArray[40];
-  static int orpArrayIndex = 0;
-  orpArray[orpArrayIndex++] = analogRead(orpPin);
-  if (orpArrayIndex == 40) orpArrayIndex = 0;
-  float averageOrp = 0.0;
-  for (int i = 0; i < 40; i++) averageOrp += orpArray[i];
-  averageOrp /= 40.0;
-  orpValue = ((5.0 * averageOrp / 4095.0) * 1000) - 2380; // Adjust offset as needed
+  static int orpArray[40]; // Array to store ORP sensor readings
+  static int orpArrayIndex = 0; // Index to keep track of the ORP array position
+  orpArray[orpArrayIndex++] = analogRead(orpPin); // Store the ORP sensor reading in the array
+  if (orpArrayIndex == 40) orpArrayIndex = 0; // Reset index after 40 readings
+  float averageOrp = 0.0; // Variable to store the average ORP value
+  for (int i = 0; i < 40; i++) averageOrp += orpArray[i]; // Sum the ORP readings
+  averageOrp /= 40.0; // Calculate the average ORP value
+  orpValue = ((5.0 * averageOrp / 4095.0) * 1000) - 2380; // Adjust the average ORP value based on the sensor range
 
-  // Flow rate
-  flowRate = (pulseCount / 7.5); // Example calculation for flow rate
-  pulseCount = 0;
+  // Flow rate sensor
+  flowRate = (pulseCount / 7.5); // Calculate the flow rate from pulse count (calibration needed)
+  pulseCount = 0; // Reset the pulse count after calculation
 
   // pH sensor
-  int rawPH = analogRead(pHSensorPin);
-  float voltagePH = rawPH * (3.3 / 4095.0);
-  pHValue = 3.3 * voltagePH; // Example conversion (adjust based on your calibration data)
+  int rawPH = analogRead(pHSensorPin); // Read the raw value from the pH sensor
+  float voltagePH = rawPH * (3.3 / 4095.0); // Convert the raw value to voltage
+  pHValue = 3.3 * voltagePH; // Calculate the pH value (adjust based on your sensor calibration)
 }
 
 // Function to calculate percentage for Soil Moisture and Water Level
 float soilMoisturePercent() {
   // Reverse the mapping logic: More moisture -> higher percentage
-  return map(soilMoisture, 0, 4095, 100, 0);  // Higher moisture -> higher percentage
+  return map(soilMoisture, 0, 4095, 100, 0);  // Map the sensor range to percentage
 }
 
 float waterLevelPercent() {
   // Reverse the mapping logic: More water -> higher percentage
-  return map(waterLevel, 0, 4095, 0, 100);  // Higher water level -> higher percentage
+  return map(waterLevel, 0, 4095, 0, 100);  // Map the water level range to percentage
 }
 
 void setup() {
-  // Initialize serial monitor
-  Serial.begin(115200);
-
-  // WiFi connection
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(1000);
-    Serial.println("Connecting to WiFi...");
-  }
-  Serial.println("Connected to WiFi");
-Serial.println(WiFi.localIP());
-  
-  // Initialize sensors
-  sensors.begin();
-  pinMode(turbidityPin, INPUT);
-  pinMode(flowSensorPin, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(flowSensorPin), pulseCounter, FALLING);
+  Serial.begin(9600); // Initialize the serial monitor at 9600 baud rate
 
   // Initialize LCD
   Wire.begin();                // Initialize I2C communication
-  lcd.begin(16, 2);            // Initialize the 16x2 LCD
-  lcd.setBacklight(1);         // Turn on the backlight
+  lcd.begin(16, 2);            // Initialize the 16x2 LCD display
+  lcd.setBacklight(1);         // Turn on the LCD backlight
 
-server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+  // WiFi connection
+  WiFi.begin(ssid, password); // Start connecting to WiFi using defined SSID and password
+  unsigned long startTime = millis(); // Record the start time of the connection attempt
+
+  while (WiFi.status() != WL_CONNECTED) { // Continue looping until WiFi is connected
+    delay(1000); // Wait for 1 second between connection attempts
+    Serial.println("Connecting to WiFi..."); // Print a message on the serial monitor
+    lcd.clear(); // Clear the LCD screen
+    lcd.print("Connecting WiFi..."); // Show the message on the LCD
+
+    if (millis() - startTime > 10000) {  // 10 seconds timeout
+      Serial.println("Failed to connect to WiFi."); // Print a failure message after 10 seconds
+      lcd.clear(); // Clear the LCD screen
+      lcd.print("WiFi Failed"); // Display "WiFi Failed" on the LCD
+      delay(2000); // Wait for 2 seconds before proceeding
+      break;  // Exit the loop after 10 seconds
+    }
+  }
+
+  if (WiFi.status() == WL_CONNECTED) { // If WiFi connection is successful
+    Serial.println("Connected to WiFi!"); // Print a success message
+    lcd.clear(); // Clear the LCD
+    lcd.print("Connected WiFi!"); // Display "Connected WiFi!" on the LCD
+    delay(2000); // Wait for 2 seconds
+    lcd.clear(); // Clear the LCD screen
+    lcd.print("IP: "); // Display "IP: " on the LCD
+    lcd.setCursor(1,1);
+    lcd.print(WiFi.localIP());  // Display the ESP32's IP address
+    Serial.println(WiFi.localIP()); // Print the IP address on the serial monitor
+    delay(2000); // Wait for 2 seconds
+  }
+
+  // Initialize sensors
+  sensors.begin();  // Initialize the temperature sensor
+  pinMode(turbidityPin, INPUT);  // Set the turbidity sensor pin as input
+  pinMode(flowSensorPin, INPUT_PULLUP); // Set the flow sensor pin as input with a pull-up resistor
+  attachInterrupt(digitalPinToInterrupt(flowSensorPin), pulseCounter, FALLING); // Set up an interrupt to count pulses on the flow sensor pin
+
+  // Start web server
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+    // Serve the HTML page when the root URL is accessed
     request->send_P(200, "text/html; charset=utf-8", R"rawliteral(
       <!DOCTYPE html>
       <html>
@@ -148,10 +173,10 @@ server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
               document.getElementById('orp').innerText = data.orp + " mV";
               document.getElementById('waterLevel').innerText = data.waterLevel + "%";
               document.getElementById('flowRate').innerText = data.flowRate + " L/min";
-              document.getElementById('pH').innerText = data.pHValue.toFixed(2);
+              document.getElementById('pH').innerText = data.pH.toFixed(2);
             });
           }
-          setInterval(fetchData, 1000);
+          setInterval(fetchData, 1000); // Update the data every second
         </script>
       </head>
       <body>
@@ -167,18 +192,15 @@ server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
       </body>
       </html>
     )rawliteral");
-});
-
+  });
 
   server.on("/data", HTTP_GET, [](AsyncWebServerRequest *request) {
-    Serial.println("Received request for /data");
-    
-    // Read sensor data
+    // Read sensor data and return a JSON response
     readSensors();
     
-    // Prepare JSON response
+    // Prepare a JSON response with sensor data
     String json = "{";
-    json += "\"temperatureC\":" + String(temperatureC, 2) + ","; te
+    json += "\"temperatureC\":" + String(temperatureC, 2) + ","; 
     json += "\"soilMoisture\":" + String(soilMoisturePercent()) + ","; 
     json += "\"turbidity\":\"" + turbidity + "\","; 
     json += "\"tds\":" + String(tdsValue, 2) + ","; 
@@ -187,69 +209,63 @@ server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
     json += "\"flowRate\":" + String(flowRate, 2) + ","; 
     json += "\"pHValue\":" + String(pHValue, 2);
     json += "}";
-
-    Serial.println("Sending data: " + json);
-    request->send(200, "application/json", json);
+    request->send(200, "application/json", json); // Send the JSON data as a response
   });
 
-  // Start server
-  server.begin();
-  Serial.println("Server started");
+  server.begin(); // Start the server
 }
 
 void loop() {
-  unsigned long currentTime = millis();
-  if (currentTime - lastUpdateTime >= updateInterval) {
-    lastUpdateTime = currentTime;
+  unsigned long currentTime = millis(); // Get the current time
+  if (currentTime - lastUpdateTime >= updateInterval) { // If 5 seconds have passed
+    lastUpdateTime = currentTime; // Update the last update time
 
     // Read sensor data
     readSensors();
 
-    // Display values on LCD
+    // Display the sensor values on the LCD
     lcd.clear();  // Clear the display
 
-    lcd.setCursor(0, 0);
-    lcd.print("Temp: " + String(temperatureC, 1) + "C");
+    lcd.setCursor(0, 0); // Set the cursor to the first line
+    lcd.print("Temp: " + String(temperatureC, 1) + "C"); // Display temperature
 
-    lcd.setCursor(0, 1);
-    lcd.print("Soil: " + String(soilMoisturePercent()) + "%");
+    lcd.setCursor(0, 1); // Set the cursor to the second line
+    lcd.print("Soil: " + String(soilMoisturePercent()) + "%"); // Display soil moisture
 
-    delay(lcdDelay);  // Delay to keep values for 1 second
-    lcd.clear();
+    delay(lcdDelay); // Wait for a moment before updating the display
+    lcd.clear(); // Clear the display
 
-    lcd.setCursor(0, 0);
-    lcd.print("pH: " + String(pHValue, 1));
+    lcd.setCursor(0, 0); // Set the cursor back to the first line
+    lcd.print("pH: " + String(pHValue, 1)); // Display pH value
 
-    lcd.setCursor(0, 1);
-    lcd.print("Flow: " + String(flowRate, 1) + "L/min");
+    lcd.setCursor(0, 1); // Set the cursor to the second line
+    lcd.print("Flow: " + String(flowRate, 1) + "L/min"); // Display flow rate
 
-    delay(lcdDelay);  // Delay to keep values for 1 second
-    lcd.clear();
+    delay(lcdDelay); // Wait for a moment before updating the display
+    lcd.clear(); // Clear the display
 
-    lcd.setCursor(0, 0);
-    lcd.print("Turb: " + turbidity);
+    lcd.setCursor(0, 0); // Set the cursor to the first line
+    lcd.print("Turb: " + turbidity); // Display turbidity status
 
-    lcd.setCursor(0, 1);
-    lcd.print("TDS: " + String(tdsValue, 1) + "ppm");
+    lcd.setCursor(0, 1); // Set the cursor to the second line
+    lcd.print("TDS: " + String(tdsValue, 1) + "ppm"); // Display TDS value
 
-    delay(lcdDelay);  // Delay to keep values for 1 second
-    lcd.clear();
+    delay(lcdDelay); // Wait for a moment before updating the display
+    lcd.clear(); // Clear the display
 
-    lcd.setCursor(0, 0);
-    lcd.print("ORP: " + String(orpValue, 1) + "mV");
+    lcd.setCursor(0, 0); // Set the cursor to the first line
+    lcd.print("ORP: " + String(orpValue, 1) + "mV"); // Display ORP value
 
-    lcd.setCursor(0, 1);
-    lcd.print("Water: " + String(waterLevelPercent()) + "%");
+    lcd.setCursor(0, 1); // Set the cursor to the second line
+    lcd.print("Water: " + String(waterLevelPercent()) + "%"); // Display water level
 
-    delay(lcdDelay);  // Delay to keep values for 1 second
-    lcd.clear();
-    
-    lcd.setCursor(6, 0);
-    lcd.print("Link:");
-    lcd.setCursor(1, 1);
-    
-    lcd.print(String("192.168.1.236"));
-    delay(lcdDelay);
-    lcd.clear();
+    delay(lcdDelay); // Wait for a moment before updating the display
+    lcd.clear(); // Clear the display
+
+    lcd.print("Link:");// Display for formatting
+    lcd.setCursor(1,1);// Set sursor to second line
+    lcd.print(WiFi.localIP());  // Display the ESP32's IP address
+    delay(lcdDelay); // Wait for a moment before updating the display
   }
 }
+
